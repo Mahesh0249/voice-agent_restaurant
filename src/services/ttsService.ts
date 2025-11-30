@@ -14,42 +14,51 @@ export class TTSService {
     }
 
     async synthesize(text: string, voiceId: string): Promise<Buffer> {
-        if (!this.apiKey) {
-            console.error('TTS Service: Missing API Key');
-            // Return empty buffer or handle error appropriately
-            return Buffer.from('');
-        }
-
         try {
-            // TODO: Implement streaming for lower latency
-            // Using a default voice ID if the provided one is a placeholder name
-            // In a real app, map VOICES.* constants to actual ElevenLabs Voice IDs
-            const actualVoiceId = this.mapVoiceId(voiceId);
-
-            const response = await axios.post(
-                `https://api.elevenlabs.io/v1/text-to-speech/${actualVoiceId}`,
-                {
-                    text: text,
-                    model_id: "eleven_turbo_v2", // Switched to Turbo for lower latency and free tier support
-                    voice_settings: {
-                        stability: 0.7, // Higher stability = more consistent, less emotional/fast
-                        similarity_boost: 0.8
-                    }
-                },
-                {
-                    headers: {
-                        'xi-api-key': this.apiKey,
-                        'Content-Type': 'application/json',
-                        'Accept': 'audio/mpeg'
+            // Priority 1: Try ElevenLabs
+            if (this.apiKey) {
+                const actualVoiceId = this.mapVoiceId(voiceId);
+                const response = await axios.post(
+                    `https://api.elevenlabs.io/v1/text-to-speech/${actualVoiceId}`,
+                    {
+                        text: text,
+                        model_id: "eleven_turbo_v2",
+                        voice_settings: {
+                            stability: 0.7,
+                            similarity_boost: 0.8
+                        }
                     },
-                    responseType: 'arraybuffer'
-                }
-            );
-
-            return Buffer.from(response.data);
+                    {
+                        headers: {
+                            'xi-api-key': this.apiKey,
+                            'Content-Type': 'application/json',
+                            'Accept': 'audio/mpeg'
+                        },
+                        responseType: 'arraybuffer'
+                    }
+                );
+                return Buffer.from(response.data);
+            } else {
+                console.warn('ElevenLabs API Key missing, falling back to Google TTS');
+                throw new Error('Missing API Key');
+            }
         } catch (error) {
-            console.error('ElevenLabs TTS Error:', error);
-            return Buffer.from('');
+            console.error('ElevenLabs TTS Error (Falling back to Google TTS):', error);
+
+            // Priority 2: Fallback to Google TTS (Free)
+            try {
+                // Dynamic import to avoid issues if package is missing
+                const googleTTS = require('google-tts-api');
+                const base64Audio = await googleTTS.getAudioBase64(text, {
+                    lang: 'en',
+                    slow: false,
+                    host: 'https://translate.google.com',
+                });
+                return Buffer.from(base64Audio, 'base64');
+            } catch (fallbackError) {
+                console.error('Google TTS Fallback Error:', fallbackError);
+                return Buffer.from('');
+            }
         }
     }
 

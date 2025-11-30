@@ -206,69 +206,6 @@
                     await playbackContext.resume();
                 }
                 log('Audio engine resumed');
-            } catch (e) {
-                log('Error resuming audio: ' + e.message);
-                log('WebSocket disconnected');
-                connectBtn.disabled = false;
-                startBtn.disabled = true;
-                stopBtn.disabled = true;
-            };
-        }
-
-        async function startRecording() {
-            if (isRecording) return;
-
-            try {
-                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-                mediaRecorder = new MediaRecorder(stream);
-                audioChunks = [];
-                isRecording = true;
-                hasUserSpoken = false; // Reset flag
-
-                if (vadToggle.checked) {
-                    setupVAD(stream);
-                }
-
-                mediaRecorder.ondataavailable = (event) => {
-                    if (event.data.size > 0) {
-                        audioChunks.push(event.data);
-                    }
-                };
-
-                mediaRecorder.onstop = () => {
-                    isRecording = false;
-                    const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
-
-                    if (hasUserSpoken || !vadToggle.checked) {
-                        if (ws && ws.readyState === WebSocket.OPEN) {
-                            log('Sending audio (' + audioBlob.size + ' bytes)...');
-                            ws.send(audioBlob);
-
-                            setTimeout(() => {
-                                ws.send('end');
-                                log('Sent "end" signal');
-                                statusEl.textContent = 'Processing...';
-                                statusEl.style.color = '#d97706';
-                            }, 100);
-                        }
-                    } else {
-                        log('Recording stopped (No speech detected)');
-                    }
-
-                    if (audioContext) {
-                        audioContext.close();
-                        audioContext = null;
-                        volumeBar.style.width = '0%';
-                    }
-                };
-
-                mediaRecorder.start();
-                statusEl.textContent = vadToggle.checked ? 'Listening... (Speak now)' : 'Recording...';
-                statusEl.style.color = '#dc2626';
-
-                startBtn.disabled = true;
-                stopBtn.disabled = false;
-
                 log('Recording started');
 
             } catch (err) {
