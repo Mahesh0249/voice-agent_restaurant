@@ -20,7 +20,12 @@ export default async function audioRoutes(fastify: FastifyInstance, options: { d
             const response = await dialogueManager.handleInput(sessionId, ''); // Trigger WELCOME
             if (response.text) {
                 const audioBuffer = await tts.synthesize(response.text, response.voice);
-                connection.socket.send(audioBuffer);
+                if (audioBuffer.length > 0) {
+                    connection.socket.send(audioBuffer);
+                } else {
+                    console.error('TTS failed, sending error to client');
+                    connection.socket.send(JSON.stringify({ type: 'error', message: 'TTS Generation Failed. Check Server Logs.' }));
+                }
             }
         })();
 
@@ -49,7 +54,12 @@ export default async function audioRoutes(fastify: FastifyInstance, options: { d
                     // TTS
                     if (response.text) {
                         const audioBuffer = await tts.synthesize(response.text, response.voice);
-                        connection.socket.send(audioBuffer);
+                        if (audioBuffer.length > 0) {
+                            connection.socket.send(audioBuffer);
+                        } else {
+                            console.error('TTS failed, sending error to client');
+                            connection.socket.send(JSON.stringify({ type: 'error', message: 'TTS Generation Failed. Check Server Logs.' }));
+                        }
 
                         // If booking is finalized, send confirmation data to client
                         if (response.booking) {
