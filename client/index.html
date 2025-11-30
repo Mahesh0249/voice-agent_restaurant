@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Voice Agent Test</title>
+    <style>
+        body {
+            font-family: system-ui, sans-serif;
+            max-width: 600px;
+            margin: 2rem auto;
+            text-align: center;
+            background: #f0f2f5;
+        }
+
+        .container {
+            background: white;
+            padding: 2rem;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+
+        button {
+            font-size: 1.2rem;
+            padding: 10px 24px;
+            border: none;
+            border-radius: 50px;
+            cursor: pointer;
+            margin: 10px;
+            transition: all 0.2s;
+        }
+
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        #startBtn {
+            background: #10b981;
+            color: white;
+        }
+
+        #stopBtn {
+            background: #ef4444;
+            color: white;
+        }
+
+        #status {
+            margin-top: 20px;
+            color: #666;
+            font-style: italic;
+            font-weight: bold;
+        }
+
+        .log {
+            text-align: left;
+            background: #1e293b;
+            color: #4ade80;
+            padding: 1rem;
+            border-radius: 8px;
+            margin-top: 2rem;
+            height: 200px;
+            overflow-y: auto;
+            font-family: monospace;
+            font-size: 0.9rem;
+        }
+
+        .mode-switch {
+            margin: 1rem 0;
+            padding: 10px;
+            background: #e0f2fe;
+            border-radius: 8px;
+            display: inline-block;
+        }
+
+        .mode-switch label {
+            cursor: pointer;
+            font-weight: bold;
+            color: #0369a1;
+        }
+
+        #volume-meter {
+            width: 100%;
+            height: 10px;
+            background: #ddd;
+            border-radius: 5px;
+            margin-top: 10px;
+            overflow: hidden;
+        }
+
+        #volume-bar {
+            height: 100%;
+            width: 0%;
+            background: #10b981;
+            transition: width 0.1s;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <h1>🎙️ Restaurant Voice Agent</h1>
+
+        <div class="mode-switch">
+            <input type="checkbox" id="vadToggle" checked>
+            <label for="vadToggle">Enable Hands-Free Mode (Auto-Send)</label>
+        </div>
+
+        <div style="text-align: left; margin-bottom: 2rem; background: #e2e8f0; padding: 1rem; border-radius: 8px;">
+            <p><strong>Instructions:</strong></p>
+            <ol>
+                <li>Click <b>Connect</b> to start.</li>
+                <li><b>Hands-Free:</b> Speak clearly. The bar below shows your volume.</li>
+                <li><b>Manual:</b> Use buttons if background noise is high.</li>
+            </ol>
+        </div>
+
+        <div id="volume-meter">
+            <div id="volume-bar"></div>
+        </div>
+
+        <div style="margin: 2rem 0;">
+            <button id="connectBtn" onclick="initConnection()"
+                style="background: #3b82f6; color: white;">Connect</button>
+            <button id="startBtn" onclick="startRecording()" disabled>Start Recording</button>
+            <button id="stopBtn" onclick="stopRecording()" disabled>Stop & Send</button>
+        </div>
+
+        <div id="status">Waiting to connect...</div>
+        <div class="log" id="log"></div>
+
+        <div style="margin-top: 2rem;">
+            <h2>📅 Live Bookings</h2>
+            <table id="bookingsTable"
+                style="width: 100%; border-collapse: collapse; margin-top: 10px; background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+                <thead style="background: #3b82f6; color: white;">
+                    <tr>
+                        <th style="padding: 10px;">Name</th>
+                        <th style="padding: 10px;">Date</th>
+                        <th style="padding: 10px;">Time</th>
+                        <th style="padding: 10px;">People</th>
+                        <th style="padding: 10px;">Status</th>
+                    </tr>
+                </thead>
+                <tbody id="bookingsBody">
+                    <!-- Rows will be added here -->
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+        let ws;
+        let mediaRecorder;
+        let audioChunks = [];
+        let audioContext;
+        let analyser;
+        let microphone;
+        let silenceTimer;
+        let noInputTimer; // Timer for 5s no-input check
+        let isRecording = false;
+        let hasUserSpoken = false; // Track if user spoke during recording
+
+        // Tuned VAD Parameters
+        const SILENCE_THRESHOLD = 0.03; // Slightly higher to ignore background noise
+        const SILENCE_DURATION = 1200; // 1.2 seconds silence to trigger send
+
+        const statusEl = document.getElementById('status');
+        const logEl = document.getElementById('log');
+        const connectBtn = document.getElementById('connectBtn');
+        const startBtn = document.getElementById('startBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        const vadToggle = document.getElementById('vadToggle');
+        const volumeBar = document.getElementById('volume-bar');
+        const bookingsBody = document.getElementById('bookingsBody');
+
+        function log(msg) {
+            logEl.innerHTML += `<div>> ${msg}</div>`;
+            logEl.scrollTop = logEl.scrollHeight;
+        }
+
+        function addBookingRow(booking) {
+            const row = document.createElement('tr');
+            row.style.borderBottom = '1px solid #eee';
+            row.innerHTML = `
+                <td style="padding: 10px;">${booking.name || 'Unknown'}</td>
+                <td style="padding: 10px;">${booking.date}</td>
+                <td style="padding: 10px;">${booking.time}</td>
+                <td style="padding: 10px;">${booking.people}</td>
+                <td style="padding: 10px; color: green; font-weight: bold;">${booking.status}</td>
+            `;
+            bookingsBody.prepend(row);
+        }
+
+        function initConnection() {
+            connectBtn.disabled = true;
+            statusEl.textContent = 'Connecting...';
+
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const host = window.location.host;
+            ws = new WebSocket(`${protocol}//${host}/audio`);
+
+            ws.onopen = () => {
+                statusEl.textContent = 'Connected! Listening for greeting...';
+                log('WebSocket connected');
+            };
+
+            ws.onmessage = async (event) => {
+                // Check if the message is text (JSON) or binary (Audio)
+                if (typeof event.data === 'string') {
+                    try {
+                        const data = JSON.parse(event.data);
+                        if (data.type === 'booking') {
+                            log('New booking confirmed!');
+                            addBookingRow(data.data);
+                        }
+                    } catch (e) {
+                        log('Received text message: ' + event.data);
+                    }
+                    return;
+                }
+
+                log('Received audio response');
+                statusEl.textContent = 'Agent is speaking...';
+                statusEl.style.color = '#2563eb';
+
+                const blob = event.data;
+                const audioUrl = URL.createObjectURL(blob);
+                const audio = new Audio(audioUrl);
+
+                audio.onended = () => {
+                    statusEl.textContent = 'Ready to speak';
+                    statusEl.style.color = '#666';
+                    startBtn.disabled = false;
+
+                    if (vadToggle.checked) {
+                        startRecording();
+                    }
+
+                    // Start No-Input Timer (5 seconds)
+                    if (noInputTimer) clearTimeout(noInputTimer);
+                    noInputTimer = setTimeout(() => {
+                        // Only send timeout if we are still recording and haven't detected speech yet
+                        if (isRecording && !hasUserSpoken) {
+                            log('No input detected (5s timeout)');
+                            stopRecording(); // Stop the empty recording
+                            // Send special text message
+                            ws.send(JSON.stringify({ type: 'text', content: 'SILENCE_TIMEOUT' }));
+                        }
+                    }, 5000);
+                };
+
+                try {
+                    await audio.play();
+                } catch (e) {
+                    log('Autoplay blocked! Click page to enable audio.');
+                    console.error(e);
+                    startBtn.disabled = false;
+                }
+            };
+
+            ws.onclose = () => {
+                statusEl.textContent = 'Disconnected';
+                statusEl.style.color = 'red';
+                log('WebSocket disconnected');
+                connectBtn.disabled = false;
+                startBtn.disabled = true;
+                stopBtn.disabled = true;
+            };
+        }
+
+        async function startRecording() {
+            if (isRecording) return;
+
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                mediaRecorder = new MediaRecorder(stream);
+                audioChunks = [];
+                isRecording = true;
+                hasUserSpoken = false; // Reset flag
+
+                if (vadToggle.checked) {
+                    setupVAD(stream);
+                }
+
+                mediaRecorder.ondataavailable = (event) => {
+                    if (event.data.size > 0) {
+                        audioChunks.push(event.data);
+                    }
+                };
+
+                mediaRecorder.onstop = () => {
+                    isRecording = false;
+                    const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+
+                    if (hasUserSpoken || !vadToggle.checked) {
+                        if (ws && ws.readyState === WebSocket.OPEN) {
+                            log('Sending audio (' + audioBlob.size + ' bytes)...');
+                            ws.send(audioBlob);
+
+                            setTimeout(() => {
+                                ws.send('end');
+                                log('Sent "end" signal');
+                                statusEl.textContent = 'Processing...';
+                                statusEl.style.color = '#d97706';
+                            }, 100);
+                        }
+                    } else {
+                        log('Recording stopped (No speech detected)');
+                    }
+
+                    if (audioContext) {
+                        audioContext.close();
+                        audioContext = null;
+                    }
+                    volumeBar.style.width = '0%';
+                };
+
+                mediaRecorder.start();
+                statusEl.textContent = vadToggle.checked ? 'Listening... (Speak now)' : 'Recording...';
+                statusEl.style.color = '#dc2626';
+
+                startBtn.disabled = true;
+                stopBtn.disabled = false;
+
+                log('Recording started');
+
+            } catch (err) {
+                console.error(err);
+                log('Error accessing microphone: ' + err.message);
+            }
+        }
+
+        function stopRecording() {
+            if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+                mediaRecorder.stop();
+                clearTimeout(silenceTimer);
+                if (noInputTimer) clearTimeout(noInputTimer); // Clear timeout if user stopped manually or VAD triggered
+
+                statusEl.textContent = 'Sending...';
+                statusEl.style.color = 'black';
+
+                startBtn.disabled = true;
+                stopBtn.disabled = true;
+
+                mediaRecorder.stream.getTracks().forEach(track => track.stop());
+            }
+        }
+
+        function setupVAD(stream) {
+            audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            analyser = audioContext.createAnalyser();
+            microphone = audioContext.createMediaStreamSource(stream);
+            microphone.connect(analyser);
+
+            analyser.fftSize = 256;
+            const bufferLength = analyser.frequencyBinCount;
+            const dataArray = new Uint8Array(bufferLength);
+
+            function detectSilence() {
+                if (!isRecording) return;
+
+                analyser.getByteFrequencyData(dataArray);
+
+                let sum = 0;
+                for (let i = 0; i < bufferLength; i++) {
+                    sum += dataArray[i];
+                }
+                const average = sum / bufferLength;
+                const volume = average / 255;
+
+                // Visual feedback
+                volumeBar.style.width = (volume * 400) + '%'; // Amplify for visibility
+
+                if (volume > SILENCE_THRESHOLD) {
+                    hasUserSpoken = true; // Mark that user spoke
+                    if (noInputTimer) clearTimeout(noInputTimer); // Clear the 5s timeout since user spoke
+
+                    clearTimeout(silenceTimer);
+                    silenceTimer = null;
+                    statusEl.textContent = 'Speaking detected...';
+                    statusEl.style.color = '#16a34a';
+                } else if (hasUserSpoken) {
+                    if (!silenceTimer) {
+                        statusEl.textContent = 'Silence detected...';
+                        statusEl.style.color = '#ca8a04';
+                        silenceTimer = setTimeout(() => {
+                            log('Auto-sending due to silence');
+                            stopRecording();
+                        }, SILENCE_DURATION);
+                    }
+                }
+
+                requestAnimationFrame(detectSilence);
+            }
+
+            detectSilence();
+        }
+    </script>
+</body>
+
+</html>
