@@ -125,6 +125,7 @@
                 style="background: #3b82f6; color: white;">Connect</button>
             <button id="startBtn" onclick="startRecording()" disabled>Start Recording</button>
             <button id="stopBtn" onclick="stopRecording()" disabled>Stop & Send</button>
+            <button id="playResponseBtn" style="display:none; background: #8b5cf6; color: white;">Play Response</button>
         </div>
 
         <div id="status">Waiting to connect...</div>
@@ -154,7 +155,8 @@
         let ws;
         let mediaRecorder;
         let audioChunks = [];
-        let audioContext;
+        let audioContext; // For VAD
+        let playbackContext; // For Audio Output
         let analyser;
         let microphone;
         let silenceTimer;
@@ -171,6 +173,7 @@
         const connectBtn = document.getElementById('connectBtn');
         const startBtn = document.getElementById('startBtn');
         const stopBtn = document.getElementById('stopBtn');
+        const playResponseBtn = document.getElementById('playResponseBtn');
         const vadToggle = document.getElementById('vadToggle');
         const volumeBar = document.getElementById('volume-bar');
         const bookingsBody = document.getElementById('bookingsBody');
@@ -193,7 +196,20 @@
             bookingsBody.prepend(row);
         }
 
-        function initConnection() {
+        async function initConnection() {
+            // Initialize and resume AudioContext on user gesture (Essential for Mobile)
+            try {
+                if (!playbackContext) {
+                    playbackContext = new (window.AudioContext || window.webkitAudioContext)();
+                }
+                if (playbackContext.state === 'suspended') {
+                    await playbackContext.resume();
+                }
+                log('Audio engine resumed');
+            } catch (e) {
+                log('Error resuming audio: ' + e.message);
+            }
+
             connectBtn.disabled = true;
             statusEl.textContent = 'Connecting...';
 
@@ -225,37 +241,43 @@
                 statusEl.textContent = 'Agent is speaking...';
                 statusEl.style.color = '#2563eb';
 
-                const blob = event.data;
-                const audioUrl = URL.createObjectURL(blob);
-                const audio = new Audio(audioUrl);
-
-                audio.onended = () => {
-                    statusEl.textContent = 'Ready to speak';
-                    statusEl.style.color = '#666';
-                    startBtn.disabled = false;
-
-                    if (vadToggle.checked) {
-                        startRecording();
-                    }
-
-                    // Start No-Input Timer (5 seconds)
-                    if (noInputTimer) clearTimeout(noInputTimer);
-                    noInputTimer = setTimeout(() => {
-                        // Only send timeout if we are still recording and haven't detected speech yet
-                        if (isRecording && !hasUserSpoken) {
-                            log('No input detected (5s timeout)');
-                            stopRecording(); // Stop the empty recording
-                            // Send special text message
-                            ws.send(JSON.stringify({ type: 'text', content: 'SILENCE_TIMEOUT' }));
-                        }
-                    }, 5000);
-                };
-
                 try {
-                    await audio.play();
+                    const arrayBuffer = await event.data.arrayBuffer();
+                    const audioBuffer = await playbackContext.decodeAudioData(arrayBuffer);
+
+                    const source = playbackContext.createBufferSource();
+                    source.buffer = audioBuffer;
+                    source.connect(playbackContext.destination);
+
+                    source.onended = () => {
+                        statusEl.textContent = 'Ready to speak';
+                        statusEl.style.color = '#666';
+                        startBtn.disabled = false;
+
+                        if (vadToggle.checked) {
+                            startRecording();
+                        }
+
+                        // Start No-Input Timer (5 seconds)
+                        if (noInputTimer) clearTimeout(noInputTimer);
+                        noInputTimer = setTimeout(() => {
+                            // Only send timeout if we are still recording and haven't detected speech yet
+                            if (isRecording && !hasUserSpoken) {
+                                log('No input detected (5s timeout)');
+                                stopRecording(); // Stop the empty recording
+                                // Send special text message
+                                ws.send(JSON.stringify({ type: 'text', content: 'SILENCE_TIMEOUT' }));
+                            }
+                        }, 5000);
+                    };
+
+                    source.start(0);
+
                 } catch (e) {
-                    log('Autoplay blocked! Click page to enable audio.');
+                    log('Playback failed: ' + e.message);
                     console.error(e);
+                    // If decoding fails, it might be a format issue
+                    statusEl.textContent = 'Error playing audio';
                     startBtn.disabled = false;
                 }
             };
@@ -313,8 +335,8 @@
                     if (audioContext) {
                         audioContext.close();
                         audioContext = null;
+                        volumeBar.style.width = '0%';
                     }
-                    volumeBar.style.width = '0%';
                 };
 
                 mediaRecorder.start();
