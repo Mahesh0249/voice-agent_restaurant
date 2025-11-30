@@ -1,5 +1,5 @@
 import dotenv from 'dotenv';
-import * as googleTTS from 'google-tts-api';
+const googleTTS = require('google-tts-api');
 
 dotenv.config();
 
