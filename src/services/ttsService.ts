@@ -16,7 +16,7 @@ export class TTSService {
             const base64Audio = await googleTTS.getAudioBase64(text, {
                 lang: 'en',
                 slow: false,
-                host: 'https://translate.google.com',
+                host: 'https://translate.google.com.vn',
             });
 
             return Buffer.from(base64Audio, 'base64');

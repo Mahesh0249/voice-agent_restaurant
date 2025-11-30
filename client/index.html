@@ -206,6 +206,146 @@
                     await playbackContext.resume();
                 }
                 log('Audio engine resumed');
+            } catch (e) {
+                log('Error resuming audio: ' + e.message);
+            }
+
+            connectBtn.disabled = true;
+            statusEl.textContent = 'Connecting...';
+
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const host = window.location.host;
+            ws = new WebSocket(`${protocol}//${host}/audio`);
+
+            ws.onopen = () => {
+                statusEl.textContent = 'Connected! Listening for greeting...';
+                log('WebSocket connected');
+            };
+
+            ws.onmessage = async (event) => {
+                // Check if the message is text (JSON) or binary (Audio)
+                if (typeof event.data === 'string') {
+                    try {
+                        const data = JSON.parse(event.data);
+                        if (data.type === 'booking') {
+                            log('New booking confirmed!');
+                            addBookingRow(data.data);
+                        }
+                    } catch (e) {
+                        log('Received text message: ' + event.data);
+                    }
+                    return;
+                }
+
+                log('Received audio response (' + (event.data.size || event.data.byteLength) + ' bytes)');
+                statusEl.textContent = 'Agent is speaking...';
+                statusEl.style.color = '#2563eb';
+
+                try {
+                    const arrayBuffer = await event.data.arrayBuffer();
+                    const audioBuffer = await playbackContext.decodeAudioData(arrayBuffer);
+
+                    const source = playbackContext.createBufferSource();
+                    source.buffer = audioBuffer;
+                    source.connect(playbackContext.destination);
+
+                    source.onended = () => {
+                        statusEl.textContent = 'Ready to speak';
+                        statusEl.style.color = '#666';
+                        startBtn.disabled = false;
+
+                        if (vadToggle.checked) {
+                            startRecording();
+                        }
+
+                        // Start No-Input Timer (5 seconds)
+                        if (noInputTimer) clearTimeout(noInputTimer);
+                        noInputTimer = setTimeout(() => {
+                            // Only send timeout if we are still recording and haven't detected speech yet
+                            if (isRecording && !hasUserSpoken) {
+                                log('No input detected (5s timeout)');
+                                stopRecording(); // Stop the empty recording
+                                // Send special text message
+                                ws.send(JSON.stringify({ type: 'text', content: 'SILENCE_TIMEOUT' }));
+                            }
+                        }, 5000);
+                    };
+
+                    source.start(0);
+
+                } catch (e) {
+                    log('Playback failed: ' + e.message);
+                    console.error(e);
+                    // If decoding fails, it might be a format issue
+                    statusEl.textContent = 'Error playing audio';
+                    startBtn.disabled = false;
+                }
+            };
+
+            ws.onclose = () => {
+                statusEl.textContent = 'Disconnected';
+                statusEl.style.color = 'red';
+                log('WebSocket disconnected');
+                connectBtn.disabled = false;
+                startBtn.disabled = true;
+                stopBtn.disabled = true;
+            };
+        }
+
+        async function startRecording() {
+            if (isRecording) return;
+
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                mediaRecorder = new MediaRecorder(stream);
+                audioChunks = [];
+                isRecording = true;
+                hasUserSpoken = false; // Reset flag
+
+                if (vadToggle.checked) {
+                    setupVAD(stream);
+                }
+
+                mediaRecorder.ondataavailable = (event) => {
+                    if (event.data.size > 0) {
+                        audioChunks.push(event.data);
+                    }
+                };
+
+                mediaRecorder.onstop = () => {
+                    isRecording = false;
+                    const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+
+                    if (hasUserSpoken || !vadToggle.checked) {
+                        if (ws && ws.readyState === WebSocket.OPEN) {
+                            log('Sending audio (' + audioBlob.size + ' bytes)...');
+                            ws.send(audioBlob);
+
+                            setTimeout(() => {
+                                ws.send('end');
+                                log('Sent "end" signal');
+                                statusEl.textContent = 'Processing...';
+                                statusEl.style.color = '#d97706';
+                            }, 100);
+                        }
+                    } else {
+                        log('Recording stopped (No speech detected)');
+                    }
+
+                    if (audioContext) {
+                        audioContext.close();
+                        audioContext = null;
+                        volumeBar.style.width = '0%';
+                    }
+                };
+
+                mediaRecorder.start();
+                statusEl.textContent = vadToggle.checked ? 'Listening... (Speak now)' : 'Recording...';
+                statusEl.style.color = '#dc2626';
+
+                startBtn.disabled = true;
+                stopBtn.disabled = false;
+
                 log('Recording started');
 
             } catch (err) {
